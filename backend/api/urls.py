@@ -24,4 +24,18 @@ urlpatterns = [
     path('recommendations/user/<int:user_id>/', 
          views.RecommendationListView.as_view(), 
          name='recommendation-list'),
+    
+    # Browsing History
+    path('browsing/', views.BrowsingHistoryView.as_view(), name='browsing-history'),
+    
+    # Search History
+    path('search/', views.SearchHistoryView.as_view(), name='search-history'),
+    
+    # Wishlist
+    path('wishlist/', views.WishlistView.as_view(), name='wishlist-create'),
+    path('wishlist/<int:user_id>/', views.WishlistView.as_view(), name='wishlist-list'),
+    path('wishlist/<int:user_id>/<int:product_id>/', views.WishlistView.as_view(), name='wishlist-delete'),
+    
+    # Model Training
+    path('train-model/', views.ModelTrainingView.as_view(), name='train-model'),
 ]

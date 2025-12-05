@@ -36,10 +36,13 @@ class Product(models.Model):
         return [tag.strip() for tag in self.tags.split(',') if tag.strip()]
 
 
-# User Model
+# User Model with Demographics
 class User(models.Model):
     name = models.CharField(max_length=100)
     email = models.EmailField(unique=True)
+    age = models.IntegerField(null=True, blank=True, help_text="User age for demographic filtering")
+    gender = models.CharField(max_length=20, blank=True, help_text="User gender for demographic filtering")
+    location = models.CharField(max_length=100, blank=True, help_text="User location")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -90,4 +93,53 @@ class Recommendation(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.product.name} (score: {self.score:.2f})"
+
+
+# Browsing History Model
+class BrowsingHistory(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='browsing_history')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='browsing_history')
+    time_spent = models.IntegerField(default=0, help_text="Time spent viewing in seconds")
+    timestamp = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['user', 'timestamp']),
+        ]
+        unique_together = [['user', 'product', 'timestamp']]
+    
+    def __str__(self):
+        return f"{self.user.email} browsed {self.product.name}"
+
+
+# Search History Model
+class SearchHistory(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='search_history')
+    query = models.CharField(max_length=200)
+    results_count = models.IntegerField(default=0)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['user', 'timestamp']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.email} searched: {self.query}"
+
+
+# Wishlist Model
+class Wishlist(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='wishlist_items')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='wishlist_items')
+    added_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-added_at']
+        unique_together = [['user', 'product']]
+    
+    def __str__(self):
+        return f"{self.user.email} - {self.product.name} (wishlist)"
 

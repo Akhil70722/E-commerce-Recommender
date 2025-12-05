@@ -1,5 +1,10 @@
 {
+  "name": "ecommerce-recommender",
+  "version": "1.0.0",
+  "description": "E-commerce Product Recommender System",
+  "private": true,
   "dependencies": {
     "axios": "^1.13.2"
   }
 }
+

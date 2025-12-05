@@ -88,7 +88,7 @@ Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Make sure PostgreSQL is running" -ForegroundColor White
 Write-Host "2. Edit .env file with your credentials" -ForegroundColor White
 Write-Host "3. Create superuser: python manage.py createsuperuser" -ForegroundColor White
-Write-Host "4. Seed data: python manage.py seed_data" -ForegroundColor White
+Write-Host "4. Add products and users via Django admin or API" -ForegroundColor White
 Write-Host "5. Start server: python manage.py runserver" -ForegroundColor White
 Write-Host ""
 Set-Location ..

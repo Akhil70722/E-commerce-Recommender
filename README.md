@@ -74,25 +74,39 @@ pip install -r requirements.txt
 
 ### Step 5: Configure Environment Variables
 
-Create a `.env` file in the `backend/` directory:
+**Backend Configuration:**
 
-```env
-# Django Settings
-SECRET_KEY=django-insecure-your-secret-key-change-this-in-production
-DEBUG=True
+Copy `backend/env.template` to `backend/.env` and fill in your actual values:
 
-# PostgreSQL Database Configuration
-DB_NAME=ecommerce_recommender
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_HOST=localhost
-DB_PORT=5432
-
-# Groq API Configuration (Required)
-GROQ_API_KEY=gsk_your_actual_groq_api_key_here
-GROQ_MODEL=llama2-70b-4096
-# Alternative models: mixtral-8x7b-32768, llama2-70b-4096, gemma-7b-it
+```bash
+cd backend
+cp env.template .env
+# Then edit .env with your actual credentials
 ```
+
+Or copy from the root `env.template` file which contains all configuration:
+
+```bash
+cp env.template backend/.env
+```
+
+**Frontend Configuration (Optional):**
+
+If you need to change the API URL, copy `frontend/.env.template` to `frontend/.env`:
+
+```bash
+cd frontend
+cp .env.template .env
+# Edit .env if you need to change the API URL (default: http://127.0.0.1:8000)
+```
+
+**Required Environment Variables:**
+
+- `SECRET_KEY`: Django secret key (generate a random string)
+- `DEBUG`: Set to `True` for development
+- `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`: PostgreSQL database credentials
+- `GROQ_API_KEY`: Your Groq API key from https://console.groq.com/
+- `GROQ_MODEL`: Groq model name (default: llama-3.1-8b-instant)
 
 ### Step 6: Run Database Migrations
 
@@ -247,7 +261,6 @@ ecommerce-recommender/
 │       ├── engine.py           # Recommendation algorithm
 │       ├── llm_service.py      # Groq API integration
 │       └── management/commands/
-│           └── seed_data.py    # Sample data seeding
 ├── docker-compose.yml
 └── README.md
 ```

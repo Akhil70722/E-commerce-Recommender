@@ -1,5 +1,8 @@
 from django.contrib import admin
-from .models import Category, Product, User, UserInteraction, Recommendation
+from .models import (
+    Category, Product, User, UserInteraction, Recommendation,
+    BrowsingHistory, SearchHistory, Wishlist
+)
 
 
 @admin.register(Category)
@@ -37,4 +40,28 @@ class RecommendationAdmin(admin.ModelAdmin):
     list_filter = ['created_at', 'score']
     search_fields = ['user__email', 'product__name']
     readonly_fields = ['created_at']
+
+
+@admin.register(BrowsingHistory)
+class BrowsingHistoryAdmin(admin.ModelAdmin):
+    list_display = ['user', 'product', 'time_spent', 'timestamp']
+    list_filter = ['timestamp']
+    search_fields = ['user__email', 'product__name']
+    readonly_fields = ['timestamp']
+
+
+@admin.register(SearchHistory)
+class SearchHistoryAdmin(admin.ModelAdmin):
+    list_display = ['user', 'query', 'results_count', 'timestamp']
+    list_filter = ['timestamp']
+    search_fields = ['user__email', 'query']
+    readonly_fields = ['timestamp']
+
+
+@admin.register(Wishlist)
+class WishlistAdmin(admin.ModelAdmin):
+    list_display = ['user', 'product', 'added_at']
+    list_filter = ['added_at']
+    search_fields = ['user__email', 'product__name']
+    readonly_fields = ['added_at']
 
