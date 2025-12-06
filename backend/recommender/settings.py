@@ -74,8 +74,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'recommender.wsgi.application'
 
-# PostgreSQL Database Configuration
-# All database settings must be provided via environment variables
+# Database Configuration
+# Uses PostgreSQL if all DB_* environment variables are provided
+# Otherwise defaults to SQLite (no configuration needed)
 
 # Get database configuration from environment variables
 db_name = os.getenv('DB_NAME')
@@ -84,53 +85,32 @@ db_password = os.getenv('DB_PASSWORD')
 db_host = os.getenv('DB_HOST')
 db_port = os.getenv('DB_PORT')
 
-# Validate that all required database environment variables are set
-required_db_vars = {
-    'DB_NAME': db_name,
-    'DB_USER': db_user,
-    'DB_PASSWORD': db_password,
-    'DB_HOST': db_host,
-    'DB_PORT': db_port,
-}
+# Check if all PostgreSQL variables are provided
+has_postgres_config = all([db_name, db_user, db_password, db_host, db_port])
 
-missing_vars = [var for var, value in required_db_vars.items() if not value or (isinstance(value, str) and value.strip() == '')]
-if missing_vars:
-    # Check if .env file exists
-    env_file_path = BASE_DIR / '.env'
-    env_template_path = BASE_DIR / 'env.template'
-    
-    error_msg = f"Missing required database environment variables: {', '.join(missing_vars)}.\n\n"
-    
-    if not env_file_path.exists():
-        error_msg += f"ERROR: .env file not found at: {env_file_path}\n"
-        if env_template_path.exists():
-            error_msg += f"SOLUTION: Copy {env_template_path} to {env_file_path} and update the values.\n"
-        else:
-            error_msg += f"SOLUTION: Create a .env file at {env_file_path} with the following variables:\n"
-            error_msg += "  DB_NAME=your_database_name\n"
-            error_msg += "  DB_USER=your_database_user\n"
-            error_msg += "  DB_PASSWORD=your_database_password\n"
-            error_msg += "  DB_HOST=your_database_host\n"
-            error_msg += "  DB_PORT=your_database_port\n"
-    else:
-        error_msg += f"ERROR: .env file exists at {env_file_path} but is missing required variables.\n"
-        error_msg += f"SOLUTION: Add the missing variables to your .env file.\n"
-    
-    raise ValueError(error_msg)
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': db_name.strip() if db_name and isinstance(db_name, str) else db_name,
-        'USER': db_user.strip() if db_user and isinstance(db_user, str) else db_user,
-        'PASSWORD': db_password.strip() if db_password and isinstance(db_password, str) else db_password,
-        'HOST': db_host.strip() if db_host and isinstance(db_host, str) else db_host,
-        'PORT': db_port.strip() if db_port and isinstance(db_port, str) else db_port,
-        'OPTIONS': {
-            'connect_timeout': 10,
-        },
+if has_postgres_config:
+    # Use PostgreSQL if all variables are provided
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': db_name.strip() if isinstance(db_name, str) else db_name,
+            'USER': db_user.strip() if isinstance(db_user, str) else db_user,
+            'PASSWORD': db_password.strip() if isinstance(db_password, str) else db_password,
+            'HOST': db_host.strip() if isinstance(db_host, str) else db_host,
+            'PORT': db_port.strip() if isinstance(db_port, str) else db_port,
+            'OPTIONS': {
+                'connect_timeout': 10,
+            },
+        }
     }
-}
+else:
+    # Default to SQLite (no configuration needed)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {

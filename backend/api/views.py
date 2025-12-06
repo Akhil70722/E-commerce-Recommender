@@ -413,12 +413,83 @@ class RecommendationListView(BaseAPIView):
     def __init__(self, *args, **kwargs):
         """Initialize recommendation engine and LLM service."""
         super().__init__(*args, **kwargs)
-        self.engine = RecommendationEngine()
+        # Pass Django cache to engine
+        self.engine = RecommendationEngine(cache_handler=cache)
         try:
             self.llm_service = LLMService()
         except ValueError as e:
             print(f"Warning: {e}")
             self.llm_service = None
+    
+    def _get_all_data(self):
+        """Fetch all data from database and convert to dictionaries."""
+        # Fetch all interactions
+        interactions = UserInteraction.objects.select_related('user', 'product').all()
+        interactions_data = [{
+            'user_id': i.user.id,
+            'product_id': i.product.id,
+            'interaction_type': i.interaction_type,
+            'rating': i.rating,
+            'timestamp': i.timestamp.isoformat() if i.timestamp else None
+        } for i in interactions]
+        
+        # Fetch all browsing history
+        browsing = BrowsingHistory.objects.select_related('user', 'product').all()
+        browsing_data = [{
+            'user_id': b.user.id,
+            'product_id': b.product.id,
+            'time_spent': b.time_spent,
+            'timestamp': b.timestamp.isoformat() if b.timestamp else None
+        } for b in browsing]
+        
+        # Fetch all wishlist items
+        wishlist = Wishlist.objects.select_related('user', 'product').all()
+        wishlist_data = [{
+            'user_id': w.user.id,
+            'product_id': w.product.id
+        } for w in wishlist]
+        
+        # Fetch all search history
+        searches = SearchHistory.objects.select_related('user').all()
+        search_history_data = [{
+            'user_id': s.user.id,
+            'query': s.query,
+            'results_count': s.results_count,
+            'timestamp': s.timestamp.isoformat() if s.timestamp else None
+        } for s in searches]
+        
+        # Fetch all products
+        products = Product.objects.select_related('category').all()
+        products_data = [{
+            'id': p.id,
+            'name': p.name,
+            'description': p.description,
+            'category': {'id': p.category.id, 'name': p.category.name},
+            'price': float(p.price),
+            'tags': p.tags,
+            'image_url': p.image_url,
+            'stock': p.stock
+        } for p in products]
+        
+        # Fetch all users
+        users = User.objects.all()
+        users_data = [{
+            'id': u.id,
+            'name': u.name,
+            'email': u.email,
+            'age': u.age,
+            'gender': u.gender,
+            'location': u.location
+        } for u in users]
+        
+        return {
+            'interactions_data': interactions_data,
+            'browsing_data': browsing_data,
+            'wishlist_data': wishlist_data,
+            'search_history_data': search_history_data,
+            'products_data': products_data,
+            'users_data': users_data
+        }
     
     def get(self, request, user_id):
         """Get real-time recommendations for a specific user."""
@@ -427,11 +498,20 @@ class RecommendationListView(BaseAPIView):
         # Get real-time recommendations (always uses latest data)
         real_time = request.GET.get('real_time', 'true').lower() == 'true'
         
+        # Fetch all data from database
+        data = self._get_all_data()
+        
         try:
             # Dynamic recommendation count - can be configured via query param or settings
             n_recommendations = int(request.GET.get('limit', 20))
             recommendations_data = self.engine.hybrid_recommendation(
-                user_id, 
+                user_id,
+                data['interactions_data'],
+                data['browsing_data'],
+                data['wishlist_data'],
+                data['search_history_data'],
+                data['products_data'],
+                data['users_data'],
                 n_recommendations=n_recommendations,
                 real_time=real_time
             )
@@ -709,14 +789,72 @@ class ModelTrainingView(BaseAPIView):
     def __init__(self, *args, **kwargs):
         """Initialize recommendation engine."""
         super().__init__(*args, **kwargs)
-        self.engine = RecommendationEngine()
+        # Pass Django cache to engine
+        self.engine = RecommendationEngine(cache_handler=cache)
+    
+    def _get_all_data(self):
+        """Fetch all data from database and convert to dictionaries."""
+        # Fetch all interactions
+        interactions = UserInteraction.objects.select_related('user', 'product').all()
+        interactions_data = [{
+            'user_id': i.user.id,
+            'product_id': i.product.id,
+            'interaction_type': i.interaction_type,
+            'rating': i.rating,
+            'timestamp': i.timestamp.isoformat() if i.timestamp else None
+        } for i in interactions]
+        
+        # Fetch all browsing history
+        browsing = BrowsingHistory.objects.select_related('user', 'product').all()
+        browsing_data = [{
+            'user_id': b.user.id,
+            'product_id': b.product.id,
+            'time_spent': b.time_spent,
+            'timestamp': b.timestamp.isoformat() if b.timestamp else None
+        } for b in browsing]
+        
+        # Fetch all wishlist items
+        wishlist = Wishlist.objects.select_related('user', 'product').all()
+        wishlist_data = [{
+            'user_id': w.user.id,
+            'product_id': w.product.id
+        } for w in wishlist]
+        
+        # Fetch all products
+        products = Product.objects.select_related('category').all()
+        products_data = [{
+            'id': p.id,
+            'name': p.name,
+            'description': p.description,
+            'category': {'id': p.category.id, 'name': p.category.name},
+            'price': float(p.price),
+            'tags': p.tags,
+            'image_url': p.image_url,
+            'stock': p.stock
+        } for p in products]
+        
+        return {
+            'interactions_data': interactions_data,
+            'browsing_data': browsing_data,
+            'wishlist_data': wishlist_data,
+            'products_data': products_data
+        }
     
     def post(self, request):
         """Train the recommendation model."""
         force_retrain = request.GET.get('force', 'false').lower() == 'true'
         
+        # Fetch all data from database
+        data = self._get_all_data()
+        
         try:
-            success = self.engine.train_model(force_retrain=force_retrain)
+            success = self.engine.train_model(
+                data['interactions_data'],
+                data['browsing_data'],
+                data['wishlist_data'],
+                data['products_data'],
+                force_retrain=force_retrain
+            )
             
             if success:
                 return self.json_response({
