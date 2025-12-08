@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
@@ -47,6 +47,26 @@ class RecommendationEngine:
         self.model_cache_key = 'recommendation_model_cache'
         self.last_training_time = None
         self.cache = cache_handler
+    
+    def _normalize_datetime(self, dt):
+        """
+        Normalize datetime to naive (removes timezone info).
+        Converts timezone-aware datetimes to naive UTC.
+        """
+        if dt is None:
+            return None
+        if isinstance(dt, str):
+            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+            # Convert timezone-aware datetime to naive UTC
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    
+    def _get_now(self, reference_datetime=None):
+        """
+        Get current datetime as naive (since we normalize all datetimes to naive).
+        """
+        return datetime.now()
         
     def train_model(self, interactions_data, browsing_data, wishlist_data, 
                    products_data, force_retrain=False):
@@ -73,8 +93,11 @@ class RecommendationEngine:
                 last_training = self.cache.get('last_model_training')
                 if last_training:
                     if isinstance(last_training, str):
-                        last_training = datetime.fromisoformat(last_training)
-                    time_diff = datetime.now() - last_training
+                        last_training = datetime.fromisoformat(last_training.replace('Z', '+00:00'))
+                    # Normalize both datetimes
+                    last_training = self._normalize_datetime(last_training)
+                    now = self._get_now(last_training)
+                    time_diff = now - last_training
                     if time_diff < timedelta(hours=1):
                         return True
             
@@ -205,10 +228,10 @@ class RecommendationEngine:
         if not timestamp:
             return 0.1
         
-        if isinstance(timestamp, str):
-            timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-        
-        days_ago = (datetime.now(timestamp.tzinfo) - timestamp).days if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo else (datetime.now() - timestamp).days
+        # Normalize timestamp
+        timestamp = self._normalize_datetime(timestamp)
+        now = self._get_now(timestamp)
+        days_ago = (now - timestamp).days
         
         # Adaptive decay rate based on recency
         # More recent items decay slower
@@ -248,10 +271,10 @@ class RecommendationEngine:
         base_weight = base_weights.get(interaction_type, 1.0)
         
         if timestamp:
-            if isinstance(timestamp, str):
-                timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            
-            days_ago = (datetime.now(timestamp.tzinfo) - timestamp).days if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo else (datetime.now() - timestamp).days
+            # Normalize timestamp
+            timestamp = self._normalize_datetime(timestamp)
+            now = self._get_now(timestamp)
+            days_ago = (now - timestamp).days
             
             # Adaptive decay based on interaction type
             if interaction_type == 'purchase':
@@ -761,10 +784,9 @@ class RecommendationEngine:
         """Check if timestamp is after cutoff date"""
         if not timestamp:
             return False
-        if isinstance(timestamp, str):
-            timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-        if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo:
-            return timestamp >= cutoff_date.replace(tzinfo=timestamp.tzinfo)
+        # Normalize both to same timezone awareness
+        timestamp = self._normalize_datetime(timestamp)
+        cutoff_date = self._normalize_datetime(cutoff_date)
         return timestamp >= cutoff_date
     
     def get_cross_sell_recommendations(self, user_id, interactions_data, n_recommendations=4):
@@ -792,7 +814,9 @@ class RecommendationEngine:
                 and self._is_recent(interaction.get('timestamp'), ninety_days_ago)):
                 uid = interaction.get('user_id')
                 # Weight by recency of purchase
-                days_ago = (datetime.now() - datetime.fromisoformat(interaction.get('timestamp').replace('Z', '+00:00'))).days if isinstance(interaction.get('timestamp'), str) else (datetime.now() - interaction.get('timestamp')).days
+                timestamp = self._normalize_datetime(interaction.get('timestamp'))
+                now = self._get_now(timestamp)
+                days_ago = (now - timestamp).days
                 recency_weight = np.exp(-days_ago / 60.0)
                 co_purchased_users[uid] = co_purchased_users.get(uid, 0) + recency_weight
         

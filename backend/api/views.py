@@ -2,20 +2,15 @@
 API Views for E-commerce Product Recommender.
 
 This module contains class-based views following Python and Django best practices.
+Uses CSV files for data storage instead of database.
 """
 import json
 from django.http import JsonResponse
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
-from django.shortcuts import get_object_or_404
-from django.db.models import Q, Count, Avg
-from django.db import models
 from django.core.cache import cache
-from .models import (
-    Category, Product, User, UserInteraction, Recommendation,
-    BrowsingHistory, SearchHistory, Wishlist
-)
+from .csv_loader import CSVDataLoader
 from .engine import RecommendationEngine
 from .llm_service import LLMService
 
@@ -42,369 +37,215 @@ class BaseAPIView(View):
     def error_response(self, message, status=400):
         """Return error JSON response."""
         return self.json_response({'error': message}, status=status)
+    
+    def _get_csv_loader(self):
+        """Get CSV data loader instance."""
+        return CSVDataLoader()
 
 
 class CategoryListView(BaseAPIView):
-    """View for listing and creating categories."""
+    """View for listing categories."""
     
     def get(self, request):
         """Get all categories."""
-        categories = Category.objects.all()
+        loader = self._get_csv_loader()
+        categories = loader.load_categories()
         data = [{
-            'id': cat.id,
-            'name': cat.name,
-            'description': cat.description,
-            'created_at': cat.created_at.isoformat()
+            'id': cat['id'],
+            'name': cat['name'],
+            'description': cat.get('description', '')
         } for cat in categories]
         return self.json_response({'categories': data})
-    
-    def post(self, request):
-        """Create a new category."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
-        
-        category = Category.objects.create(
-            name=data.get('name'),
-            description=data.get('description', '')
-        )
-        return self.json_response({
-            'id': category.id,
-            'name': category.name,
-            'description': category.description,
-            'created_at': category.created_at.isoformat()
-        }, status=201)
 
 
 class CategoryDetailView(BaseAPIView):
-    """View for retrieving, updating, and deleting a category."""
+    """View for retrieving a category."""
     
     def get(self, request, pk):
         """Get a specific category."""
-        category = get_object_or_404(Category, pk=pk)
-        return self.json_response({
-            'id': category.id,
-            'name': category.name,
-            'description': category.description,
-            'created_at': category.created_at.isoformat()
-        })
-    
-    def put(self, request, pk):
-        """Update a category."""
-        category = get_object_or_404(Category, pk=pk)
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
+        loader = self._get_csv_loader()
+        categories = loader.load_categories()
+        category = next((c for c in categories if c['id'] == int(pk)), None)
         
-        category.name = data.get('name', category.name)
-        category.description = data.get('description', category.description)
-        category.save()
+        if not category:
+            return self.error_response('Category not found', 404)
         
         return self.json_response({
-            'id': category.id,
-            'name': category.name,
-            'description': category.description,
-            'created_at': category.created_at.isoformat()
+            'id': category['id'],
+            'name': category['name'],
+            'description': category.get('description', '')
         })
-    
-    def delete(self, request, pk):
-        """Delete a category."""
-        category = get_object_or_404(Category, pk=pk)
-        category.delete()
-        return self.json_response({'message': 'Category deleted'}, status=204)
 
 
 class ProductListView(BaseAPIView):
-    """View for listing and creating products."""
+    """View for listing products."""
     
     def get(self, request):
         """Get all products with optional filtering."""
-        products = Product.objects.select_related('category').all()
+        loader = self._get_csv_loader()
+        products = loader.load_products()
+        interactions = loader.load_interactions()
         
         # Filter by category
         category_id = request.GET.get('category')
         if category_id:
-            products = products.filter(category_id=category_id)
+            products = [p for p in products if p['category']['id'] == int(category_id)]
         
         # Search functionality
-        search = request.GET.get('search')
+        search = request.GET.get('search', '').lower()
         if search:
-            products = products.filter(
-                Q(name__icontains=search) |
-                Q(description__icontains=search) |
-                Q(tags__icontains=search)
-            )
+            products = [
+                p for p in products
+                if search in p['name'].lower() or
+                search in p.get('description', '').lower() or
+                search in p.get('tags', '').lower()
+            ]
         
-        # Calculate ratings for each product dynamically
-        product_ids = [prod.id for prod in products]
-        ratings_data = UserInteraction.objects.filter(
-            product_id__in=product_ids,
-            interaction_type='rating',
-            rating__isnull=False
-        ).values('product_id').annotate(
-            avg_rating=Avg('rating'),
-            rating_count=Count('id')
-        )
+        # Calculate ratings for each product
+        ratings_dict = {}
+        for interaction in interactions:
+            if interaction.get('interaction_type') == 'rating' and interaction.get('rating'):
+                product_id = interaction['product_id']
+                if product_id not in ratings_dict:
+                    ratings_dict[product_id] = {'ratings': [], 'count': 0}
+                ratings_dict[product_id]['ratings'].append(interaction['rating'])
+                ratings_dict[product_id]['count'] += 1
         
-        ratings_dict = {
-            item['product_id']: {
-                'average_rating': round(item['avg_rating'], 1) if item['avg_rating'] else 0,
-                'rating_count': item['rating_count']
+        # Calculate averages
+        for product_id, rating_data in ratings_dict.items():
+            ratings_dict[product_id] = {
+                'average_rating': round(sum(rating_data['ratings']) / len(rating_data['ratings']), 1),
+                'rating_count': rating_data['count']
             }
-            for item in ratings_data
-        }
         
-        data = [{
-            'id': prod.id,
-            'name': prod.name,
-            'description': prod.description,
-            'category': {
-                'id': prod.category.id,
-                'name': prod.category.name
-            },
-            'price': float(prod.price),
-            'tags': prod.tags,
-            'tags_list': prod.get_tags_list(),
-            'image_url': prod.image_url,
-            'stock': prod.stock,
-            'average_rating': ratings_dict.get(prod.id, {}).get('average_rating', 0),
-            'rating_count': ratings_dict.get(prod.id, {}).get('rating_count', 0),
-            'created_at': prod.created_at.isoformat(),
-            'updated_at': prod.updated_at.isoformat()
-        } for prod in products]
+        data = []
+        for prod in products:
+            tags = prod.get('tags', '')
+            tags_list = [tag.strip() for tag in tags.split(',') if tag.strip()] if tags else []
+            
+            rating_info = ratings_dict.get(prod['id'], {'average_rating': 0, 'rating_count': 0})
+            
+            data.append({
+                'id': prod['id'],
+                'name': prod['name'],
+                'description': prod.get('description', ''),
+                'category': prod['category'],
+                'price': prod['price'],
+                'tags': tags,
+                'tags_list': tags_list,
+                'image_url': prod.get('image_url', ''),
+                'stock': prod.get('stock', 0),
+                'average_rating': rating_info['average_rating'],
+                'rating_count': rating_info['rating_count']
+            })
         
         return self.json_response({'products': data})
-    
-    def post(self, request):
-        """Create a new product."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
-        
-        product = Product.objects.create(
-            name=data.get('name'),
-            description=data.get('description'),
-            category_id=data.get('category_id'),
-            price=data.get('price'),
-            tags=data.get('tags', ''),
-            image_url=data.get('image_url', ''),
-            stock=data.get('stock', 0)
-        )
-        
-        return self.json_response({
-            'id': product.id,
-            'name': product.name,
-            'description': product.description,
-            'category': {
-                'id': product.category.id,
-                'name': product.category.name
-            },
-            'price': float(product.price),
-            'tags': product.tags,
-            'stock': product.stock,
-            'created_at': product.created_at.isoformat()
-        }, status=201)
 
 
 class ProductDetailView(BaseAPIView):
-    """View for retrieving, updating, and deleting a product."""
+    """View for retrieving a product."""
     
     def get(self, request, pk):
         """Get a specific product."""
-        product = get_object_or_404(
-            Product.objects.select_related('category'), 
-            pk=pk
-        )
-        return self.json_response({
-            'id': product.id,
-            'name': product.name,
-            'description': product.description,
-            'category': {
-                'id': product.category.id,
-                'name': product.category.name
-            },
-            'price': float(product.price),
-            'tags': product.tags,
-            'tags_list': product.get_tags_list(),
-            'image_url': product.image_url,
-            'stock': product.stock,
-            'created_at': product.created_at.isoformat(),
-            'updated_at': product.updated_at.isoformat()
-        })
-    
-    def put(self, request, pk):
-        """Update a product."""
-        product = get_object_or_404(Product, pk=pk)
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
+        loader = self._get_csv_loader()
+        products = loader.load_products()
+        product = next((p for p in products if p['id'] == int(pk)), None)
         
-        # Update fields if provided
-        if 'name' in data:
-            product.name = data['name']
-        if 'description' in data:
-            product.description = data['description']
-        if 'category_id' in data:
-            product.category_id = data['category_id']
-        if 'price' in data:
-            product.price = data['price']
-        if 'tags' in data:
-            product.tags = data['tags']
-        if 'stock' in data:
-            product.stock = data['stock']
+        if not product:
+            return self.error_response('Product not found', 404)
         
-        product.save()
+        tags = product.get('tags', '')
+        tags_list = [tag.strip() for tag in tags.split(',') if tag.strip()] if tags else []
         
         return self.json_response({
-            'id': product.id,
-            'name': product.name,
-            'description': product.description,
-            'category': {
-                'id': product.category.id,
-                'name': product.category.name
-            },
-            'price': float(product.price),
-            'tags': product.tags,
-            'stock': product.stock
+            'id': product['id'],
+            'name': product['name'],
+            'description': product.get('description', ''),
+            'category': product['category'],
+            'price': product['price'],
+            'tags': tags,
+            'tags_list': tags_list,
+            'image_url': product.get('image_url', ''),
+            'stock': product.get('stock', 0)
         })
-    
-    def delete(self, request, pk):
-        """Delete a product."""
-        product = get_object_or_404(Product, pk=pk)
-        product.delete()
-        return self.json_response({'message': 'Product deleted'}, status=204)
 
 
 class UserListView(BaseAPIView):
-    """View for listing and creating users."""
+    """View for listing users."""
     
     def get(self, request):
         """Get all users."""
-        users = User.objects.all()
+        loader = self._get_csv_loader()
+        users = loader.load_users()
         data = [{
-            'id': user.id,
-            'name': user.name,
-            'email': user.email,
-            'created_at': user.created_at.isoformat()
+            'id': user['id'],
+            'name': user['name'],
+            'email': user['email']
         } for user in users]
         return self.json_response({'users': data})
-    
-    def post(self, request):
-        """Create a new user."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
-        
-        user = User.objects.create(
-            name=data.get('name'),
-            email=data.get('email')
-        )
-        
-        return self.json_response({
-            'id': user.id,
-            'name': user.name,
-            'email': user.email,
-            'created_at': user.created_at.isoformat()
-        }, status=201)
 
 
 class UserDetailView(BaseAPIView):
-    """View for retrieving, updating, and deleting a user."""
+    """View for retrieving a user."""
     
     def get(self, request, pk):
         """Get a specific user."""
-        user = get_object_or_404(User, pk=pk)
-        return self.json_response({
-            'id': user.id,
-            'name': user.name,
-            'email': user.email,
-            'created_at': user.created_at.isoformat()
-        })
-    
-    def put(self, request, pk):
-        """Update a user."""
-        user = get_object_or_404(User, pk=pk)
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
+        loader = self._get_csv_loader()
+        users = loader.load_users()
+        user = next((u for u in users if u['id'] == int(pk)), None)
         
-        if 'name' in data:
-            user.name = data['name']
-        if 'email' in data:
-            user.email = data['email']
-        
-        user.save()
+        if not user:
+            return self.error_response('User not found', 404)
         
         return self.json_response({
-            'id': user.id,
-            'name': user.name,
-            'email': user.email,
-            'created_at': user.created_at.isoformat()
+            'id': user['id'],
+            'name': user['name'],
+            'email': user['email']
         })
-    
-    def delete(self, request, pk):
-        """Delete a user."""
-        user = get_object_or_404(User, pk=pk)
-        user.delete()
-        return self.json_response({'message': 'User deleted'}, status=204)
 
 
 class InteractionListView(BaseAPIView):
-    """View for listing and creating user interactions."""
+    """View for listing user interactions."""
     
     def get(self, request):
         """Get all interactions with optional filtering."""
-        interactions = UserInteraction.objects.select_related('user', 'product').all()
+        loader = self._get_csv_loader()
+        interactions = loader.load_interactions()
+        users = {u['id']: u for u in loader.load_users()}
+        products = {p['id']: p for p in loader.load_products()}
         
         # Filter by user_id
         user_id = request.GET.get('user_id')
         if user_id:
-            interactions = interactions.filter(user_id=user_id)
+            interactions = [i for i in interactions if i['user_id'] == int(user_id)]
         
         # Filter by product_id
         product_id = request.GET.get('product_id')
         if product_id:
-            interactions = interactions.filter(product_id=product_id)
+            interactions = [i for i in interactions if i['product_id'] == int(product_id)]
         
-        data = [{
-            'id': inter.id,
-            'user': {
-                'id': inter.user.id,
-                'name': inter.user.name,
-                'email': inter.user.email
-            },
-            'product': {
-                'id': inter.product.id,
-                'name': inter.product.name
-            },
-            'interaction_type': inter.interaction_type,
-            'rating': inter.rating,
-            'timestamp': inter.timestamp.isoformat()
-        } for inter in interactions]
+        data = []
+        for inter in interactions:
+            user = users.get(inter['user_id'], {})
+            product = products.get(inter['product_id'], {})
+            
+            data.append({
+                'id': inter.get('id', 0),
+                'user': {
+                    'id': user.get('id', 0),
+                    'name': user.get('name', ''),
+                    'email': user.get('email', '')
+                },
+                'product': {
+                    'id': product.get('id', 0),
+                    'name': product.get('name', '')
+                },
+                'interaction_type': inter.get('interaction_type', ''),
+                'rating': inter.get('rating'),
+                'timestamp': inter.get('timestamp', '')
+            })
         
         return self.json_response({'interactions': data})
-    
-    def post(self, request):
-        """Create a new interaction."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
-        
-        interaction = UserInteraction.objects.create(
-            user_id=data.get('user_id'),
-            product_id=data.get('product_id'),
-            interaction_type=data.get('interaction_type'),
-            rating=data.get('rating')
-        )
-        
-        return self.json_response({
-            'id': interaction.id,
-            'user_id': interaction.user.id,
-            'product_id': interaction.product.id,
-            'interaction_type': interaction.interaction_type,
-            'rating': interaction.rating,
-            'timestamp': interaction.timestamp.isoformat()
-        }, status=201)
 
 
 class RecommendationListView(BaseAPIView):
@@ -422,87 +263,35 @@ class RecommendationListView(BaseAPIView):
             self.llm_service = None
     
     def _get_all_data(self):
-        """Fetch all data from database and convert to dictionaries."""
-        # Fetch all interactions
-        interactions = UserInteraction.objects.select_related('user', 'product').all()
-        interactions_data = [{
-            'user_id': i.user.id,
-            'product_id': i.product.id,
-            'interaction_type': i.interaction_type,
-            'rating': i.rating,
-            'timestamp': i.timestamp.isoformat() if i.timestamp else None
-        } for i in interactions]
-        
-        # Fetch all browsing history
-        browsing = BrowsingHistory.objects.select_related('user', 'product').all()
-        browsing_data = [{
-            'user_id': b.user.id,
-            'product_id': b.product.id,
-            'time_spent': b.time_spent,
-            'timestamp': b.timestamp.isoformat() if b.timestamp else None
-        } for b in browsing]
-        
-        # Fetch all wishlist items
-        wishlist = Wishlist.objects.select_related('user', 'product').all()
-        wishlist_data = [{
-            'user_id': w.user.id,
-            'product_id': w.product.id
-        } for w in wishlist]
-        
-        # Fetch all search history
-        searches = SearchHistory.objects.select_related('user').all()
-        search_history_data = [{
-            'user_id': s.user.id,
-            'query': s.query,
-            'results_count': s.results_count,
-            'timestamp': s.timestamp.isoformat() if s.timestamp else None
-        } for s in searches]
-        
-        # Fetch all products
-        products = Product.objects.select_related('category').all()
-        products_data = [{
-            'id': p.id,
-            'name': p.name,
-            'description': p.description,
-            'category': {'id': p.category.id, 'name': p.category.name},
-            'price': float(p.price),
-            'tags': p.tags,
-            'image_url': p.image_url,
-            'stock': p.stock
-        } for p in products]
-        
-        # Fetch all users
-        users = User.objects.all()
-        users_data = [{
-            'id': u.id,
-            'name': u.name,
-            'email': u.email,
-            'age': u.age,
-            'gender': u.gender,
-            'location': u.location
-        } for u in users]
-        
+        """Load all data from CSV files."""
+        loader = self._get_csv_loader()
         return {
-            'interactions_data': interactions_data,
-            'browsing_data': browsing_data,
-            'wishlist_data': wishlist_data,
-            'search_history_data': search_history_data,
-            'products_data': products_data,
-            'users_data': users_data
+            'interactions_data': loader.load_interactions(),
+            'browsing_data': loader.load_browsing_history(),
+            'wishlist_data': loader.load_wishlist(),
+            'search_history_data': loader.load_search_history(),
+            'products_data': loader.load_products(),
+            'users_data': loader.load_users()
         }
     
     def get(self, request, user_id):
         """Get real-time recommendations for a specific user."""
-        user = get_object_or_404(User, pk=user_id)
+        user_id = int(user_id)
+        loader = self._get_csv_loader()
+        users = loader.load_users()
+        user = next((u for u in users if u['id'] == user_id), None)
+        
+        if not user:
+            return self.error_response('User not found', 404)
         
         # Get real-time recommendations (always uses latest data)
         real_time = request.GET.get('real_time', 'true').lower() == 'true'
         
-        # Fetch all data from database
+        # Load all data from CSV
         data = self._get_all_data()
         
         try:
-            # Dynamic recommendation count - can be configured via query param or settings
+            # Dynamic recommendation count
             n_recommendations = int(request.GET.get('limit', 20))
             recommendations_data = self.engine.hybrid_recommendation(
                 user_id,
@@ -517,6 +306,8 @@ class RecommendationListView(BaseAPIView):
             )
         except Exception as e:
             print(f"Error generating recommendations: {e}")
+            import traceback
+            traceback.print_exc()
             return self.error_response(
                 f"Error generating recommendations: {str(e)}",
                 500
@@ -529,57 +320,66 @@ class RecommendationListView(BaseAPIView):
                 'recommendations': []
             })
         
-        # Get comprehensive user's interaction history for better context
-        # Dynamic limits - can be configured via query params
-        interaction_limit = int(request.GET.get('interaction_limit', 15))
-        browsing_limit = int(request.GET.get('browsing_limit', 10))
+        # Get user's interaction history for context
+        products = {p['id']: p for p in data['products_data']}
+        interactions = data['interactions_data']
+        browsing = data['browsing_data']
         
-        user_interactions = UserInteraction.objects.filter(
-            user=user
-        ).select_related('product', 'product__category').order_by('-timestamp')[:interaction_limit]
+        # Get user interactions
+        user_interactions = [
+            i for i in interactions 
+            if i.get('user_id') == user_id
+        ]
+        user_browsing = [
+            b for b in browsing 
+            if b.get('user_id') == user_id
+        ]
         
-        user_browsing = BrowsingHistory.objects.filter(
-            user=user
-        ).select_related('product', 'product__category').order_by('-timestamp')[:browsing_limit]
-        
+        # Build user history
         user_history = []
-        for interaction in user_interactions:
-            user_history.append({
-                'product': interaction.product.name,
-                'type': interaction.interaction_type,
-                'category': interaction.product.category.name,
-                'timestamp': interaction.timestamp.isoformat()
-            })
+        for interaction in sorted(user_interactions, key=lambda x: x.get('timestamp', ''), reverse=True)[:15]:
+            product = products.get(interaction.get('product_id'))
+            if product:
+                user_history.append({
+                    'product': product.get('name', ''),
+                    'type': interaction.get('interaction_type', ''),
+                    'category': product.get('category', {}).get('name', ''),
+                    'timestamp': interaction.get('timestamp', '')
+                })
         
-        for browsing in user_browsing:
-            user_history.append({
-                'product': browsing.product.name,
-                'type': 'browse',
-                'category': browsing.product.category.name,
-                'timestamp': browsing.timestamp.isoformat()
-            })
+        for browse in sorted(user_browsing, key=lambda x: x.get('timestamp', ''), reverse=True)[:10]:
+            product = products.get(browse.get('product_id'))
+            if product:
+                user_history.append({
+                    'product': product.get('name', ''),
+                    'type': 'browse',
+                    'category': product.get('category', {}).get('name', ''),
+                    'timestamp': browse.get('timestamp', '')
+                })
         
-        # Sort by timestamp (most recent first)
+        # Sort by timestamp
         user_history.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        user_history = user_history[:15]  # Top 15 most recent
+        user_history = user_history[:15]
         
-        # Generate recommendations with enhanced LLM explanations
+        # Generate recommendations with LLM explanations
         recommendations = []
         for product_id, score in recommendations_data:
-            try:
-                product = Product.objects.select_related('category').get(id=product_id)
-            except Product.DoesNotExist:
+            product = products.get(product_id)
+            if not product:
                 continue
             
             # Get product info
+            tags = product.get('tags', '')
+            tags_list = [tag.strip() for tag in tags.split(',') if tag.strip()] if tags else []
+            
             product_info = {
-                'name': product.name,
-                'category': product.category.name,
-                'description': product.description,
-                'tags': product.get_tags_list()
+                'name': product.get('name', ''),
+                'category': product.get('category', {}).get('name', ''),
+                'description': product.get('description', ''),
+                'tags': tags_list
             }
             
-            # Generate explanation (with LLM if available, otherwise use default)
+            # Generate explanation
             explanation = None
             if self.llm_service:
                 try:
@@ -596,43 +396,35 @@ class RecommendationListView(BaseAPIView):
             else:
                 explanation = self._generate_default_explanation(product, user_history, score)
             
-            # Create or update recommendation
-            Recommendation.objects.update_or_create(
-                user=user,
-                product=product,
-                defaults={
-                    'score': score,
-                    'explanation': explanation
-                }
-            )
+            # Calculate average rating
+            product_ratings = [
+                i.get('rating') for i in interactions
+                if i.get('product_id') == product_id and
+                i.get('interaction_type') == 'rating' and
+                i.get('rating') is not None
+            ]
             
-            # Calculate average rating dynamically
-            ratings = UserInteraction.objects.filter(
-                product=product,
-                interaction_type='rating',
-                rating__isnull=False
-            )
-            avg_rating = ratings.aggregate(Avg('rating'))['rating__avg'] or 0
-            rating_count = ratings.count()
+            avg_rating = round(sum(product_ratings) / len(product_ratings), 1) if product_ratings else 0
+            rating_count = len(product_ratings)
             
             recommendations.append({
-                'product_id': product.id,
-                'product_name': product.name,
-                'category': product.category.name,
-                'price': float(product.price),
-                'description': product.description,
-                'image_url': product.image_url,
+                'product_id': product['id'],
+                'product_name': product.get('name', ''),
+                'category': product.get('category', {}).get('name', ''),
+                'price': product.get('price', 0),
+                'description': product.get('description', ''),
+                'image_url': product.get('image_url', ''),
                 'score': round(score, 3),
                 'explanation': explanation,
-                'average_rating': round(avg_rating, 1) if avg_rating else 0,
+                'average_rating': avg_rating,
                 'rating_count': rating_count,
-                'stock': product.stock,
-                'tags': product.get_tags_list()
+                'stock': product.get('stock', 0),
+                'tags': tags_list
             })
         
         return self.json_response({
             'user_id': user_id,
-            'user_email': user.email,
+            'user_email': user.get('email', ''),
             'real_time': real_time,
             'recommendations': recommendations,
             'total_recommendations': len(recommendations)
@@ -640,147 +432,86 @@ class RecommendationListView(BaseAPIView):
     
     def _generate_default_explanation(self, product, user_history, score=None):
         """Generate a default explanation when LLM is not available"""
+        category_name = product.get('category', {}).get('name', 'product')
+        
         if user_history:
             categories = [h.get('category', '') for h in user_history if isinstance(h, dict)]
-            if product.category.name in categories:
-                return f"Based on your recent interest in {product.category.name} products, we recommend this item as it matches your preferences and shopping patterns."
+            if category_name in categories:
+                return f"Based on your recent interest in {category_name} products, we recommend this item as it matches your preferences and shopping patterns."
             
-            # Check for specific product interactions
             product_names = [h.get('product', '') for h in user_history if isinstance(h, dict)]
-            if any(product.name.lower() in name.lower() or name.lower() in product.name.lower() 
+            if any(product.get('name', '').lower() in name.lower() or name.lower() in product.get('name', '').lower() 
                    for name in product_names if name):
-                return f"Recommended because you've shown interest in similar products. This {product.category.name} item complements your recent selections."
+                return f"Recommended because you've shown interest in similar products. This {category_name} item complements your recent selections."
             
             return f"Recommended based on your browsing and purchase history. This product aligns with your shopping preferences."
         
         if score and score > 0.6:
-            return f"This {product.category.name} product is highly recommended because it's popular among customers with similar interests and offers great value."
+            return f"This {category_name} product is highly recommended because it's popular among customers with similar interests and offers great value."
         
-        return f"This product matches your preferences and is popular with similar customers. We think you'll enjoy this {product.category.name} item."
+        return f"This product matches your preferences and is popular with similar customers. We think you'll enjoy this {category_name} item."
 
 
 class BrowsingHistoryView(BaseAPIView):
-    """View for tracking browsing history."""
+    """View for tracking browsing history (read-only from CSV)."""
     
-    def post(self, request):
-        """Record a browsing event."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
+    def get(self, request):
+        """Get browsing history."""
+        loader = self._get_csv_loader()
+        browsing = loader.load_browsing_history()
         
-        browsing = BrowsingHistory.objects.create(
-            user_id=data.get('user_id'),
-            product_id=data.get('product_id'),
-            time_spent=data.get('time_spent', 0)
-        )
+        user_id = request.GET.get('user_id')
+        if user_id:
+            browsing = [b for b in browsing if b.get('user_id') == int(user_id)]
         
-        # Also create a view interaction
-        UserInteraction.objects.get_or_create(
-            user_id=data.get('user_id'),
-            product_id=data.get('product_id'),
-            interaction_type='view',
-            defaults={'rating': None}
-        )
-        
-        return self.json_response({
-            'id': browsing.id,
-            'user_id': browsing.user.id,
-            'product_id': browsing.product.id,
-            'timestamp': browsing.timestamp.isoformat()
-        }, status=201)
+        return self.json_response({'browsing_history': browsing})
 
 
 class SearchHistoryView(BaseAPIView):
-    """View for tracking search queries."""
+    """View for tracking search queries (read-only from CSV)."""
     
-    def post(self, request):
-        """Record a search query."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
+    def get(self, request):
+        """Get search history."""
+        loader = self._get_csv_loader()
+        searches = loader.load_search_history()
         
-        # Count search results
-        query = data.get('query', '')
-        from django.db.models import Q
-        results_count = Product.objects.filter(
-            Q(name__icontains=query) |
-            Q(description__icontains=query) |
-            Q(tags__icontains=query)
-        ).count()
+        user_id = request.GET.get('user_id')
+        if user_id:
+            searches = [s for s in searches if s.get('user_id') == int(user_id)]
         
-        search = SearchHistory.objects.create(
-            user_id=data.get('user_id'),
-            query=query,
-            results_count=results_count
-        )
-        
-        return self.json_response({
-            'id': search.id,
-            'user_id': search.user.id,
-            'query': search.query,
-            'results_count': search.results_count,
-            'timestamp': search.timestamp.isoformat()
-        }, status=201)
+        return self.json_response({'search_history': searches})
 
 
 class WishlistView(BaseAPIView):
     """View for managing wishlist items."""
     
-    def post(self, request):
-        """Add item to wishlist."""
-        data = self.parse_json_body(request)
-        if not data:
-            return self.error_response('Invalid JSON', 400)
-        
-        wishlist_item, created = Wishlist.objects.get_or_create(
-            user_id=data.get('user_id'),
-            product_id=data.get('product_id')
-        )
-        
-        if not created:
-            return self.json_response({
-                'message': 'Item already in wishlist',
-                'id': wishlist_item.id
-            })
-        
-        return self.json_response({
-            'id': wishlist_item.id,
-            'user_id': wishlist_item.user.id,
-            'product_id': wishlist_item.product.id,
-            'added_at': wishlist_item.added_at.isoformat()
-        }, status=201)
-    
     def get(self, request, user_id):
         """Get user's wishlist."""
-        wishlist_items = Wishlist.objects.filter(
-            user_id=user_id
-        ).select_related('product', 'product__category')
+        loader = self._get_csv_loader()
+        wishlist = loader.load_wishlist()
+        products = {p['id']: p for p in loader.load_products()}
         
-        items = [{
-            'id': item.id,
-            'product_id': item.product.id,
-            'product': {
-                'id': item.product.id,
-                'name': item.product.name,
-                'category': item.product.category.name,
-                'price': float(item.product.price),
-                'description': item.product.description,
-                'image_url': item.product.image_url,
-            },
-            'added_at': item.added_at.isoformat()
-        } for item in wishlist_items]
+        user_id = int(user_id)
+        wishlist_items = [w for w in wishlist if w.get('user_id') == user_id]
+        
+        items = []
+        for item in wishlist_items:
+            product = products.get(item.get('product_id'))
+            if product:
+                items.append({
+                    'id': item.get('id', 0),
+                    'product_id': product['id'],
+                    'product': {
+                        'id': product['id'],
+                        'name': product.get('name', ''),
+                        'category': product.get('category', {}).get('name', ''),
+                        'price': product.get('price', 0),
+                        'description': product.get('description', ''),
+                        'image_url': product.get('image_url', ''),
+                    }
+                })
         
         return self.json_response({'items': items})
-    
-    def delete(self, request, user_id, product_id):
-        """Remove item from wishlist."""
-        wishlist_item = get_object_or_404(
-            Wishlist,
-            user_id=user_id,
-            product_id=product_id
-        )
-        wishlist_item.delete()
-        return self.json_response({'message': 'Item removed from wishlist'}, status=204)
 
 
 class ModelTrainingView(BaseAPIView):
@@ -793,58 +524,20 @@ class ModelTrainingView(BaseAPIView):
         self.engine = RecommendationEngine(cache_handler=cache)
     
     def _get_all_data(self):
-        """Fetch all data from database and convert to dictionaries."""
-        # Fetch all interactions
-        interactions = UserInteraction.objects.select_related('user', 'product').all()
-        interactions_data = [{
-            'user_id': i.user.id,
-            'product_id': i.product.id,
-            'interaction_type': i.interaction_type,
-            'rating': i.rating,
-            'timestamp': i.timestamp.isoformat() if i.timestamp else None
-        } for i in interactions]
-        
-        # Fetch all browsing history
-        browsing = BrowsingHistory.objects.select_related('user', 'product').all()
-        browsing_data = [{
-            'user_id': b.user.id,
-            'product_id': b.product.id,
-            'time_spent': b.time_spent,
-            'timestamp': b.timestamp.isoformat() if b.timestamp else None
-        } for b in browsing]
-        
-        # Fetch all wishlist items
-        wishlist = Wishlist.objects.select_related('user', 'product').all()
-        wishlist_data = [{
-            'user_id': w.user.id,
-            'product_id': w.product.id
-        } for w in wishlist]
-        
-        # Fetch all products
-        products = Product.objects.select_related('category').all()
-        products_data = [{
-            'id': p.id,
-            'name': p.name,
-            'description': p.description,
-            'category': {'id': p.category.id, 'name': p.category.name},
-            'price': float(p.price),
-            'tags': p.tags,
-            'image_url': p.image_url,
-            'stock': p.stock
-        } for p in products]
-        
+        """Load all data from CSV files."""
+        loader = self._get_csv_loader()
         return {
-            'interactions_data': interactions_data,
-            'browsing_data': browsing_data,
-            'wishlist_data': wishlist_data,
-            'products_data': products_data
+            'interactions_data': loader.load_interactions(),
+            'browsing_data': loader.load_browsing_history(),
+            'wishlist_data': loader.load_wishlist(),
+            'products_data': loader.load_products()
         }
     
     def post(self, request):
         """Train the recommendation model."""
         force_retrain = request.GET.get('force', 'false').lower() == 'true'
         
-        # Fetch all data from database
+        # Load all data from CSV
         data = self._get_all_data()
         
         try:
@@ -869,6 +562,8 @@ class ModelTrainingView(BaseAPIView):
                 }, status=200)
                 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return self.error_response(
                 f'Error training model: {str(e)}',
                 500
