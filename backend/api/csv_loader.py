@@ -18,9 +18,9 @@ class CSVDataLoader:
             csv_folder_path: Path to CSV folder. If None, uses default location.
         """
         if csv_folder_path is None:
-            # Default to csv folder in project root
+            # Default to dataset folder in project root
             base_dir = Path(__file__).resolve().parent.parent.parent
-            csv_folder_path = base_dir / 'csv'
+            csv_folder_path = base_dir / 'dataset'
         
         self.csv_folder = Path(csv_folder_path)
         if not self.csv_folder.exists():

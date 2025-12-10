@@ -8,24 +8,7 @@ from collections import Counter
 
 
 class RecommendationEngine:
-    """
-    Advanced Real-Time Recommendation Engine with Enhanced Accuracy
-    
-    Features:
-    - User-based and Item-based Collaborative Filtering with Pearson correlation
-    - Enhanced Content-Based Filtering with advanced feature engineering
-    - Matrix Factorization (SVD) with optimal component selection
-    - Diversity and Popularity Bias Correction with inverse frequency
-    - Advanced Time Decay with adaptive decay rates
-    - Category Diversity with novelty scoring
-    - Price Range Matching with statistical modeling
-    - Cold-Start Handling with demographic and popularity fallbacks
-    - Sophisticated Hybrid Combination with adaptive weights
-    - Context-aware interaction weighting
-    
-    This engine is database-agnostic and works with plain Python data structures.
-    """
-    
+
     def __init__(self, cache_handler=None):
         """
         Initialize the recommendation engine.
